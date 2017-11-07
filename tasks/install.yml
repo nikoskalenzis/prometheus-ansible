@@ -1,95 +1,158 @@
 ---
-- name: create prometheus directory structure
-  file: >
-    state=directory
-    path={{ item }}
-    owner=root
-    group=root
-  with_items:
-    - "{{ prometheus_root_dir }}"
-    - "{{ prometheus_bin_dir }}"
-    - "{{ prometheus_dist_dir }}"
-    - "{{ prometheus_config_dir }}"
-    - "{{ prometheus_db_dir }}"
-
-- stat: path={{ prometheus_dist_dir}}/prometheus-{{prometheus_version}}.linux-amd64.tar.gz
-  register: prometheus_tar_gz
-
-- name: install prometheus and node_exporter from tar.gz
-  raw: >
-    cd {{ prometheus_dist_dir }};
-    wget https://github.com/prometheus/prometheus/releases/download/{{prometheus_version}}/prometheus-{{prometheus_version}}.linux-amd64.tar.gz;
-    tar xvfz prometheus-{{prometheus_version}}.linux-amd64.tar.gz;
-    wget https://github.com/prometheus/node_exporter/releases/download/{{node_exporter_version}}/node_exporter-{{node_exporter_version}}.linux-amd64.tar.gz;
-    tar xfvz node_exporter-{{node_exporter_version}}.linux-amd64.tar.gz;
-    mv node_exporter {{ prometheus_bin_dir }};
-    ln -s {{ prometheus_dist_dir }}/prometheus-{{prometheus_version}}.linux-amd64 {{prometheus_server_dir}}
-#    cp {{prometheus_server_dir}}/consoles/index.html.example {{prometheus_server_dir}}/consoles/index.html
-  when: prometheus_tar_gz.stat.exists == False
-    
-- name: create prometheus config file
-  template: src=prometheus.yml.j2 dest={{ prometheus_config_dir }}/prometheus.yml
-  notify: restart prometheus
-
-- name: create prometheus default system-wide config
-  template: src=prometheus_default.j2 dest=/etc/default/prometheus
-  notify: restart prometheus
-
-- name: create prometheus and node_exporter upstart init files
-  template: >
-    src={{ item }}.j2
-    dest=/etc/init/{{ item }}
-  with_items:
-    - prometheus.conf
-    - prometheus_node_exporter.conf
-  notify:
-     - restart prometheus
-     - restart prometheus_node_exporter
-
-- name: install packages required for PromDash
-  apt: >
-    pkg={{item}}
-    state=installed
-  with_items:
-    - ruby
-    - bundler
-    - libsqlite3-dev
-    - sqlite3
-    - zlib1g-dev
-    - rake
-
-- stat: path={{ prometheus_dist_dir}}/promdash
-  register: promdash
-
-- name: install PromDash
-  raw: >
-    cd {{ prometheus_dist_dir }};
-    git clone https://github.com/prometheus/promdash.git;
-    cd promdash;
-    bundle install --without mysql postgresql;
-    echo "export DATABASE_URL=sqlite3:{{prometheus_db_dir}}/mydb.sqlite3" >> ~/.bashrc;
-    echo "export RAILS_ENV=production" >> ~/.bashrc;
-    export DATABASE_URL=sqlite3:{{prometheus_db_dir}}/mydb.sqlite3;
-    export RAILS_ENV=production;
-    rake db:migrate;
-    rake assets:precompile;
-  when: promdash.stat.exists == False
-
-
-- name: check if PromDash is running
-  shell: ps -def|grep thin | grep -v grep
-  register: promdash_running
-
-- name: run PromDash
-  raw: >
-    cd {{ prometheus_dist_dir }}/promdash;
-    bundle exec thin start -d
-  when: promdash_running.rc == 1
-
-- meta: flush_handlers
-
-- name: start prometheus
-  service: name=prometheus state=started enabled=yes
-- name: start node-exporter
-  service: name=prometheus_node_exporter state=started enabled=yes
-
+- name: install prometheus on vm
+  hosts: all
+  vars:
+    prometheus_version: v2.0.0-rc.2
+    prometheus_link: 2.0.0-rc.2
+    node_exporter_version: v0.15.0
+    node_exporter_link: 0.15.0
+    prometheus_root_dir: /opt/prometheus
+    prometheus_config_dir: /etc/prometheus
+    prometheus_server_dir: "{{ prometheus_root_dir }}/prometheus-server"
+    prometheus_bin_dir: "{{ prometheus_root_dir }}/bin"
+    prometheus_dist_dir: "{{ prometheus_root_dir }}/dist"
+    prometheus_db_dir: "{{ prometheus_root_dir }}/databases"
+    prometheus_host_domain_name: prometheus.branchmessenger.com
+    inventory_hostname: prometheus.branchmessenger.com
+  tasks:
+    - name: isntall wget
+      become: True
+      yum: name=wget state=latest update_cache=yes
+    - name: create prometheus directory structure
+      become: True
+      file: >
+        state=directory
+        path={{ item }}
+        owner=root
+        group=root
+      with_items:
+        - "{{ prometheus_root_dir }}"
+        - "{{ prometheus_bin_dir }}"
+        - "{{ prometheus_dist_dir }}"
+        - "{{ prometheus_config_dir }}"
+        - "{{ prometheus_db_dir }}"
+    - name: download prometheus
+      become: True
+      get_url:  
+        url: https://github.com/prometheus/prometheus/releases/download/{{ prometheus_version}}/prometheus-{{ prometheus_link }}.linux-amd64.tar.gz
+        dest: "{{ prometheus_dist_dir }}"
+    - name: download node_exporter
+      become: True
+      get_url:
+        url: https://github.com/prometheus/node_exporter/releases/download/{{ node_exporter_version }}/node_exporter-{{ node_exporter_link }}.linux-amd64.tar.gz
+        dest: "{{ prometheus_dist_dir }}"
+    - name: unpack prometheus
+      become: True
+      shell: tar -xvf {{ prometheus_dist_dir }}/prometheus-{{prometheus_link}}.linux-amd64.tar.gz -C {{ prometheus_dist_dir }}
+    - name: unpack node_exporter
+      become: True
+      shell: tar -xvf {{ prometheus_dist_dir }}/node_exporter-{{node_exporter_link}}.linux-amd64.tar.gz -C {{ prometheus_dist_dir }}
+    - name: move nore_exporter executable to bin dir
+      become: True
+      shell: mv {{ prometheus_dist_dir }}/node_exporter-{{ node_exporter_link }}.linux-amd64/node_exporter {{ prometheus_bin_dir }}
+    - name: create link for prometehus in server directory
+      become: True
+      file: path={{ prometheus_server_dir }}
+            src={{ prometheus_dist_dir }}/prometheus-{{ prometheus_link }}.linux-amd64
+            state=link
+            force=yes       
+    - name: copy index.html.example to index.html
+      become: True
+      shell: cp "{{ prometheus_server_dir }}"/consoles/index.html.example "{{ prometheus_server_dir }}"/consoles/index.html
+    - name: create prometheus config file
+      become: True
+      template:
+        src: templates/prometheus.yml.j2
+        dest: /etc/prometheus/prometheus.yml
+      notify: restart prometheus
+    - name: create prometheus default system-wide config
+      become: True
+      template: src=templates/prometheus_default.j2 dest=/etc/default/prometheus
+      notify: restart prometheus
+    - name: create prometheus and node_exporter upstart init files
+      become: True
+      template: 
+        src=templates/{{ item }}.j2
+        dest=/etc/init/{{ item }}
+      with_items:
+        - prometheus.conf
+        - prometheus_node_exporter.conf
+      notify: restart prometheus
+    - name: install packages required for PromDash
+      become: True
+      yum: 
+        name={{ item }}
+        state=installed
+      with_items:
+        - git
+        - ruby
+        - rubygem-bundler
+        - sqlite-devel
+        - sqlite3-dbf
+        - zlib-devel
+        - zlibrary-devel
+        - rubygem-rake
+        - openssl
+    - stat: path={{ prometheus_dist_dir }}/promdash
+      register: promdash
+    - name: remove system ruby
+      become: True
+      yum:
+        name: ruby
+        state: absent
+    - name: install rvm and get ruby from rvm
+      become: True
+      shell: |
+        gpg --keyserver hkp://keys.gnupg.net --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3 7D2BAF1CF37B13E2069D6956105BD0E739499BDB
+        curl -L get.rvm.io | bash -s stable --ruby=2.0.0-p645
+        echo PATH="{{ ansible_env.HOME }}/.rvm/bin" >> ~/.bashrc
+        echo "source /usr/local/rvm/scripts/rvm" >> ~/.bashrc
+    - name: output ruby path
+      command: which ruby
+      register: which_ruby
+    - debug:
+        msg: "{{ which_ruby.stdout }}"
+      become: True
+    - name: install PromDash
+      become: True
+      shell: |
+        git clone https://github.com/prometheus/promdash.git
+        cd promdash
+        rvm use --default 2.0.0.-p645
+        gem install bundler
+        bundle install --without mysql postgresql
+        echo "export DATABASE_URL=sqlite3:{{ prometheus_db_dir }}/mydb.sqlite3" >> ~/.bashrc
+        echo "export RAILS_ENV=production" >> ~/.bashrc
+        export DATABASE_URL=sqlite3:{{ prometheus_db_dir }}/mydb.sqlite3
+        export RAILS_ENV=production
+        rake db:migrate
+        rake assets:precompile
+      args:
+        chdir: "{{ prometheus_dist_dir }}"
+      when: promdash.stat.exists == False
+    - name: check if PromDash is running
+      become: True
+      shell: ps -def|grep thin | grep -v grep
+      register: promdash_running
+    - name: run PromDash
+      become: True
+      raw: >
+        cd {{ prometheus_dist_dir }}/promdash;
+        bundle exec thin start -d
+      when: promdash_running.rc == 1
+    - meta: flush_handlers
+    - name: start prometheus
+      become: True
+      service: name=prometheus state=started enabled=yes
+    - name: start node-exporter
+      become: True
+      service: name=prometheus_node_exporter state=started enabled=yes
+  handlers:
+    - name: restart prometheus
+      service: name=prometheus state=restarted
+    - name: restart prometheus_node_exporter
+      service: name=prometheus_node_exporter state=restarted
+    - name: update yum
+      command: yum update
+    - name: restart nginx
+      service: name=nginx state=restarted

@@ -1,0 +1,2 @@
+[api]
+bm-api ansible_host=104.199.41.200 ansible_port=22 ansible_user=bm ansible_private_key_file=~/.ssh/google_compute_engine

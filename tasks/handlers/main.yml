@@ -1,0 +1,10 @@
+---
+handlers:
+  - name: restart prometheus
+    service: name=prometheus state=restarted
+  - name: restart prometheus_node_exporter
+    service: name=prometheus_node_exporter state=restarted
+  - name: update yum
+    command: yum update
+  - name: restart nginx
+    service: name=nginx state=restarted
